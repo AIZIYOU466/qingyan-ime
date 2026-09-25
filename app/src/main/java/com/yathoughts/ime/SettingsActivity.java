@@ -31,7 +31,25 @@ public final class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashHandler.install(this);
+        try {
+            buildUi();
+        } catch (Throwable t) {
+            // 设置页自身崩溃时不再闪退：展示错误 + 崩溃日志
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            TextView tv = new TextView(this);
+            String log = CrashHandler.readLast(this);
+            tv.setText("界面异常：\n" + android.util.Log.getStackTraceString(t)
+                    + (log == null ? "" : "\n\n上次崩溃日志：\n" + log));
+            tv.setTextSize(12);
+            tv.setTextIsSelectable(true);
+            int p = (int) (16 * getResources().getDisplayMetrics().density);
+            sv.addView(tv);
+            setContentView(sv);
+        }
+    }
 
+    private void buildUi() {
         float dp = getResources().getDisplayMetrics().density;
         int pad = (int) (20 * dp);
 
@@ -93,13 +111,37 @@ public final class SettingsActivity extends Activity {
         about.setLineSpacing(4 * dp, 1f);
         root.addView(about, matchWrap());
 
+        // 崩溃日志查看（有日志才显示）
+        String crash = CrashHandler.readLast(this);
+        if (crash != null) {
+            root.addView(space((int) (16 * dp)));
+            TextView crashTitle = title("检测到上次崩溃日志", 14, true);
+            root.addView(crashTitle, matchWrap());
+            TextView crashView = new TextView(this);
+            crashView.setText(crash.length() > 4000 ? crash.substring(crash.length() - 4000) : crash);
+            crashView.setTextSize(11);
+            crashView.setTextIsSelectable(true);
+            root.addView(crashView, matchWrap());
+            Button clearCrash = new Button(this);
+            clearCrash.setText("清除崩溃日志");
+            clearCrash.setOnClickListener(v -> {
+                CrashHandler.clear(this);
+                recreate();
+            });
+            root.addView(clearCrash, matchWrap());
+        }
+
         setContentView(root);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        refreshStatus();
+        try {
+            refreshStatus();
+        } catch (Throwable ignored) {
+            // 状态读取失败不影响页面使用
+        }
     }
 
     private void refreshStatus() {
