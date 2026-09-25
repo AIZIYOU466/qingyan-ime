@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 低版本兜底图标（API < 26） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_bg" />
+    <item android:drawable="@drawable/ic_launcher_fg"
+        android:gravity="center" />
+</layer-list>

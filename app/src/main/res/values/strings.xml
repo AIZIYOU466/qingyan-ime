@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">清简输入法</string>
+    <string name="ime_name">清简输入法</string>
+
+    <!-- 设置页 -->
+    <string name="setup_title">启用清简输入法</string>
+    <string name="setup_step1">第 1 步：在系统设置中启用「清简输入法」</string>
+    <string name="setup_step2">第 2 步：切换默认输入法为「清简输入法」</string>
+    <string name="btn_enable_ime">去启用输入法</string>
+    <string name="btn_switch_ime">去切换输入法</string>
+    <string name="status_enabled">已启用</string>
+    <string name="status_not_enabled">未启用</string>
+    <string name="status_default">当前默认</string>
+    <string name="status_not_default">不是默认</string>
+
+    <string name="pref_title">偏好设置</string>
+    <string name="pref_fuzzy">模糊拼音（zh/z、ch/c、sh/s、an/ang 等）</string>
+    <string name="pref_vibrate">按键震动</string>
+    <string name="pref_sound">按键音</string>
+    <string name="pref_clear_user">清空用户词库</string>
+    <string name="pref_clear_user_done">用户词库已清空</string>
+
+    <string name="about_title">关于</string>
+    <string name="about_text">清简输入法 · 简洁清爽，无广告，无跟踪。\n26 键全拼 · 大词库 · 整句输入 · 用户词自学习。\n数据完全保存在本机，不上传任何内容。</string>
+</resources>

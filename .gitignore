@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# IDE
+.idea/
+*.iml
+local.properties
+
+# 密钥绝不入库（CI 用 GitHub Secrets 注入）
+*.keystore
+*.jks
+
+# 临时
+*.log

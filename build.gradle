@@ -1,0 +1,4 @@
+// 顶层构建脚本：AGP 8.2.2（本地 Gradle 缓存已有，避免联网下载新版）
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}

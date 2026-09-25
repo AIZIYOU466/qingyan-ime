@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.yathoughts.ime'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.yathoughts.qingyan.ime"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 纯框架 API，零第三方依赖：构建最快、APK 最小
+dependencies {
+}

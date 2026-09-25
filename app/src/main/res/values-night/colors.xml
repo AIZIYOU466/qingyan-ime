@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 暗色配色 -->
+    <color name="primary">#60A5FA</color>
+    <color name="bg">#1C1C1E</color>
+
+    <color name="kb_bg">#111114</color>
+    <color name="kb_key_bg">#2C2C2E</color>
+    <color name="kb_key_text">#E5E7EB</color>
+    <color name="kb_key_pressed">#3A5A8C</color>
+    <color name="kb_special_bg">#252528</color>
+    <color name="kb_accent_key_bg">#3B82F6</color>
+    <color name="kb_accent_key_text">#FFFFFF</color>
+    <color name="kb_candidate_bg">#1C1C1E</color>
+    <color name="kb_candidate_text">#E5E7EB</color>
+    <color name="kb_pinyin_text">#6B7280</color>
+    <color name="kb_divider">#2C2C2E</color>
+</resources>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 亮色配色：清爽浅色 -->
+    <color name="primary">#3B82F6</color>
+    <color name="bg">#F5F7FA</color>
+
+    <!-- 键盘配色（代码中引用） -->
+    <color name="kb_bg">#E8ECF2</color>
+    <color name="kb_key_bg">#FFFFFF</color>
+    <color name="kb_key_text">#1F2937</color>
+    <color name="kb_key_pressed">#D7E3F8</color>
+    <color name="kb_special_bg">#DCE1E8</color>
+    <color name="kb_accent_key_bg">#3B82F6</color>
+    <color name="kb_accent_key_text">#FFFFFF</color>
+    <color name="kb_candidate_bg">#F5F7FA</color>
+    <color name="kb_candidate_text">#1F2937</color>
+    <color name="kb_pinyin_text">#9CA3AF</color>
+    <color name="kb_divider">#D8DDE5</color>
+</resources>
