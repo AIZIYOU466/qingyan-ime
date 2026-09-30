@@ -39,6 +39,16 @@ public final class ImeService extends InputMethodService implements KeyboardView
 
     private PinyinEngine engine;   // UserDictHolder 单例，见 onCreate
 
+    private final SharedPreferences.OnSharedPreferenceChangeListener prefListener =
+            (sp, key) -> {
+                if (key == null) return;
+                if (key.equals(KeyboardView.PREF_SCALE)
+                        || key.equals(KeyboardView.PREF_HEIGHT)
+                        || key.equals(KeyboardView.PREF_KEY)) {
+                    if (keyboardView != null) applyKeyboardAdjust(sp);
+                }
+            };
+
     private String pendingPinyin = "";      // 组合中的拼音字母串
     private List<PinyinEngine.Candidate> candidates = new ArrayList<>();
     private boolean candidatesAllowed = true;   // 由当前 inputType 决定
@@ -51,6 +61,16 @@ public final class ImeService extends InputMethodService implements KeyboardView
         CrashHandler.install(this);
         engine = UserDictHolder.get();
         engine.initAsync(getApplicationContext(), this::onEngineReady);
+        // 键盘调节参数（含设置页改动）实时同步到键盘
+        getSharedPreferences("ime_prefs", MODE_PRIVATE)
+                .registerOnSharedPreferenceChangeListener(prefListener);
+    }
+
+    private void applyKeyboardAdjust(SharedPreferences sp) {
+        if (keyboardView == null) return;
+        keyboardView.setAdjust(sp.getInt(KeyboardView.PREF_SCALE, 100),
+                sp.getInt(KeyboardView.PREF_HEIGHT, 100),
+                sp.getInt(KeyboardView.PREF_KEY, 100));
     }
 
     private void onEngineReady() {
@@ -60,16 +80,22 @@ public final class ImeService extends InputMethodService implements KeyboardView
 
     private void applyPrefs() {
         SharedPreferences sp = getSharedPreferences("ime_prefs", MODE_PRIVATE);
-        engine.setFuzzyEnabled(sp.getBoolean("fuzzy", false));
+        engine.setFuzzyEnabled(sp.getBoolean("fuzzy", true));
         boolean haptic = sp.getBoolean("vibrate", true);
         if (keyboardView != null) keyboardView.setHapticEnabled(haptic);
         boolean sound = sp.getBoolean("sound", true);
         if (keyboardView != null) keyboardView.setSoundEnabled(sound);
+        applyKeyboardAdjust(sp);
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        try {
+            getSharedPreferences("ime_prefs", MODE_PRIVATE)
+                    .unregisterOnSharedPreferenceChangeListener(prefListener);
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -160,8 +186,8 @@ public final class ImeService extends InputMethodService implements KeyboardView
 
     @Override
     public void onPanelChanged(int panel) {
-        if (panel != KeyboardView.PANEL_ALPHA) {
-            // 进入符号/数字页：组合中的首选先上屏，避免拼音残留
+        if (panel == KeyboardView.PANEL_SYMBOL || panel == KeyboardView.PANEL_NUMBER) {
+            // 进入符号/数字页：组合中的首选先上屏，避免拼音残留；调节页不动组合
             flushTopCandidate();
         }
         applyCandidateVisibility();

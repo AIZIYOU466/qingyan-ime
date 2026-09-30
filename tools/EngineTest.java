@@ -12,12 +12,14 @@ public class EngineTest {
     static int[] keyStart, keyCount;
     static byte[] entryData;
     static int[] entryOffsets;
-
+    static byte[][] initials;
+    static int[][] initialsKeys;
     public static void main(String[] args) throws Exception {
         byte[] raw = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(args[0]));
         ByteBuffer buf = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
         byte[] magic = new byte[4]; buf.get(magic);
-        if (magic[0]!='Q'||magic[1]!='J'||magic[2]!='L'||magic[3]!='1') throw new IOException("magic");
+        if (magic[0]!='Q'||magic[1]!='J'||magic[2]!='L'||(magic[3]!='1'&&magic[3]!='2')) throw new IOException("magic");
+        boolean hasInitials = magic[3]=='2';
         int keyCountN = buf.getInt();
         keys = new byte[keyCountN][]; keyStart = new int[keyCountN]; keyCount = new int[keyCountN];
         for (int i=0;i<keyCountN;i++){
@@ -35,7 +37,8 @@ public class EngineTest {
             p += 2+cl*2+4;
         }
         entryOffsets[entryN]=p;
-        System.out.println("keys="+keyCountN+" entries="+entryN);
+        System.out.println("keys="+keyCountN+" entries="+entryN+" hasInitials="+hasInitials);
+        if (hasInitials) loadInitials(entryOffsets[entryN]);
 
         int fail=0;
         // 1. 基础查询
@@ -52,11 +55,31 @@ public class EngineTest {
             System.out.println((hit?"PASS":"FAIL") + " " + t[0] + " -> " + top.subList(0, Math.min(5, top.size())) + (hit?"":" (期望含 "+t[1]+")"));
             if (!hit) fail++;
         }
-        // 3. 前缀预测: "xians" 应该能找到 先生
+        // 前缀预测: "xians" 应该能找到 先生
         {
             List<String> pref = prefixWords("xians", 5);
             System.out.println((pref.contains("先生")?"PASS":"FAIL") + " prefix xians -> " + pref);
             if (!pref.contains("先生")) fail++;
+        }
+        // 3.5 前缀联想: 单字母 n 能出 你/那/年 类
+        {
+            List<String> pref = prefixWords("n", 20);
+            boolean hit = pref.contains("你") || pref.contains("那") || pref.contains("年");
+            System.out.println((hit?"PASS":"FAIL") + " prefix n -> " + pref.subList(0, Math.min(8, pref.size())));
+            if (!hit) fail++;
+        }
+        // 3.6 简拼联想: zg -> 中国（QJL2 专属）
+        if (hasInitials) {
+            List<String> in = initialsWords("zg", 8);
+            boolean hit = in.contains("中国");
+            System.out.println((hit?"PASS":"FAIL") + " initials zg -> " + in.subList(0, Math.min(8, in.size())));
+            if (!hit) fail++;
+            List<String> nl = initialsWords("nl", 8);
+            boolean hit2 = nl.contains("你") || nl.contains("年") || nl.contains("哪里");
+            System.out.println((hit2?"PASS":"FAIL") + " initials nl -> " + nl.subList(0, Math.min(8, nl.size())));
+            if (!hit2) fail++;
+        } else {
+            System.out.println("SKIP initials test (QJL1)");
         }
         // 4. 查询性能
         {
@@ -105,6 +128,49 @@ public class EngineTest {
             if (out.size()>50) break;
         }
         return out;
+    }
+
+    static List<String> initialsWords(String init, int perKey){
+        List<String> out=new ArrayList<>();
+        if (initials==null) return out;
+        int idx = binarySearchInitials(init.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        if (idx<0) return out;
+        for (int ki : initialsKeys[idx]){
+            int s=keyStart[ki], c=Math.min(keyCount[ki], perKey);
+            for (int j=0;j<c;j++){
+                int e=entryOffsets[s+j];
+                int cl=readShort(e);
+                StringBuilder sb=new StringBuilder();
+                for (int k=0;k<cl;k++) sb.append(readChar(e+2+k*2));
+                out.add(sb.toString());
+            }
+            if (out.size()>80) break;
+        }
+        return out;
+    }
+
+    static int binarySearchInitials(byte[] t){
+        int lo=0, hi=initials.length-1;
+        while (lo<=hi){
+            int mid=(lo+hi)>>>1;
+            int cmp=compareBytes(initials[mid],t);
+            if (cmp<0) lo=mid+1; else if (cmp>0) hi=mid-1; else return mid;
+        }
+        return -1;
+    }
+
+    static void loadInitials(int p){
+        int n = readInt(p); p+=4;
+        if (n<=0||n>200000) return;
+        initials = new byte[n][]; initialsKeys = new int[n][];
+        for (int i=0;i<n;i++){
+            int len=readShort(p); p+=2;
+            byte[] ib=new byte[len]; System.arraycopy(entryData,p,ib,0,len); p+=len;
+            int cnt=readInt(p); p+=4;
+            int[] ks=new int[cnt];
+            for (int j=0;j<cnt;j++){ ks[j]=readInt(p); p+=4; }
+            initials[i]=ib; initialsKeys[i]=ks;
+        }
     }
 
     static int check(String key, String expectFirst) {

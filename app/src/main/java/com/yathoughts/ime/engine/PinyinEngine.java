@@ -106,15 +106,36 @@ public final class PinyinEngine {
             }
         }
 
-        // 3) 前缀预测：用户还没打完，预测以"整个输入"为前缀的词
+        // 3) 前缀预测：用户还没打完，按"已输入串为前缀"联想完整拼音词。
+        //    权重接近精确命中（百度习惯）；候选不足时退避删尾字母补（nih→ni→你好）
         byte[] whole = ascii(raw);
         if (whole != null) {
-            for (String k : expandFuzzy(raw)) {
-                byte[] kb = ascii(k);
-                if (kb == null) continue;
-                List<Lexicon.Word> pref = lexicon.lookupPrefix(kb, 8);
-                // 预测候选降权
-                addWords(out, byWord, pref, raw, 0.55);
+            String prefix = raw;
+            for (int d = 0; d < 2; d++) {
+                if (prefix.isEmpty()) break;
+                for (String k : expandFuzzy(prefix)) {
+                    byte[] kb = ascii(k);
+                    if (kb == null) continue;
+                    addWords(out, byWord, lexicon.lookupPrefix(kb, 10), raw, d == 0 ? 0.9 : 0.7);
+                }
+                if (out.size() >= limit) break;
+                if (prefix.length() <= 1) break;
+                prefix = prefix.substring(0, prefix.length() - 1);
+            }
+        }
+
+        // 3.5) 简拼联想：输入 2~5 位字母且候选不足时，按首字母简拼查词（zg→中国）
+        if (out.size() < limit && raw.length() >= 2 && raw.length() <= 5
+                && raw.indexOf('\'') < 0 && lexicon.hasInitialsIndex()) {
+            String ini = raw;
+            for (int d = 0; d < 2; d++) {
+                if (ini.isEmpty()) break;
+                byte[] ib = ascii(ini);
+                if (ib == null) break;
+                addWords(out, byWord, lexicon.lookupInitials(ib, 6), raw, d == 0 ? 0.85 : 0.7);
+                if (out.size() >= limit) break;
+                if (ini.length() <= 1) break;
+                ini = ini.substring(0, ini.length() - 1);
             }
         }
 

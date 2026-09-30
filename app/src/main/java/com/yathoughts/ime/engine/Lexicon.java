@@ -14,22 +14,27 @@ import android.content.Context;
  * 词库加载与查询。
  *
  * 资产文件 assets/lexicon/lex.bin，布局见 tools/build_lexicon.py：
- *   [magic 'QJL1'][keyCount][key 记录...(keyLen2+key+start4+count4)][entryCount][entry 记录...]
+ *   [magic 'QJL1'|'QJL2'][keyCount][key 记录...(keyLen2+key+start4+count4)][entryCount][entry 记录...]
  *   entry 记录: [charLen2][utf16 码元][freq4]
+ *   QJL2 附加: [initialCount][initial 记录...(initLen2+init+keyCount4+keyIdx...)] 简拼索引
  *
  * 加载时：
  *   - keys 按字典序存为 byte[][]（二分用）
  *   - keyStart/keyCount int 数组
  *   - 一次 O(n) 扫描建 entryOffsets（每条 entry 在字节流中的起始偏移）→ 随机访问 O(1)
  *   - 词文本不预解码，按需从 byte[] 解（省内存）
+ *   - QJL2：简拼索引同解析到内存（简拼 -> keys 下标，用于首字母联想）
  */
 public final class Lexicon {
 
     private byte[][] keys;            // 升序 ASCII
     private int[] keyEntryStart;      // key 对应 entry 区间起点
     private int[] keyEntryCount;      // 区间长度
-    private byte[] entryData;         // entry 区原始字节
+    private byte[] entryData;         // entry 区原始字节（QJL2 时含尾部简拼索引）
     private int[] entryOffsets;       // 每条 entry 在 entryData 中的偏移，长度 = entryCount+1
+
+    private byte[][] initials;        // 升序 ASCII 简拼（QJL2），null 表示索引不可用
+    private int[][] initialsKeys;     // 每条简拼对应的 key 下标列表
 
     private static final int MAX_RESULTS_PER_KEY = 60;
 
@@ -39,9 +44,11 @@ public final class Lexicon {
 
         byte[] magic = new byte[4];
         buf.get(magic);
-        if (magic[0] != 'Q' || magic[1] != 'J' || magic[2] != 'L' || magic[3] != '1') {
+        if (magic[0] != 'Q' || magic[1] != 'J' || magic[2] != 'L'
+                || (magic[3] != '1' && magic[3] != '2')) {
             throw new IOException("lex.bin magic mismatch");
         }
+        boolean hasInitials = magic[3] == '2';
         int keyCount = buf.getInt();
         keys = new byte[keyCount][];
         keyEntryStart = new int[keyCount];
@@ -68,6 +75,38 @@ public final class Lexicon {
             p += 2 + charLen * 2 + 4;
         }
         entryOffsets[entryCount] = p;
+
+        if (hasInitials) loadInitials();
+    }
+
+    /** QJL2 尾部简拼索引区：在 entry 区之后解析简拼 -> key 下标列表 */
+    private void loadInitials() {
+        int p = entryOffsets[entryOffsets.length - 1];
+        if (p + 4 > entryData.length) return;
+        int n = readInt(p);
+        p += 4;
+        if (n <= 0 || n > 200000 || p >= entryData.length) return;
+        initials = new byte[n][];
+        initialsKeys = new int[n][];
+        for (int i = 0; i < n; i++) {
+            if (p + 2 > entryData.length) { initials = null; initialsKeys = null; return; }
+            int len = readShort(p);
+            p += 2;
+            if (p + len > entryData.length) { initials = null; initialsKeys = null; return; }
+            byte[] ib = new byte[len];
+            System.arraycopy(entryData, p, ib, 0, len);
+            p += len;
+            int cnt = readInt(p);
+            p += 4;
+            if (p + cnt * 4 > entryData.length) { initials = null; initialsKeys = null; return; }
+            int[] ks = new int[cnt];
+            for (int j = 0; j < cnt; j++) {
+                ks[j] = readInt(p);
+                p += 4;
+            }
+            initials[i] = ib;
+            initialsKeys[i] = ks;
+        }
     }
 
     /** 精确 key 查询：返回该 key 下按词频降序的候选（含 word、freq）。 */
@@ -95,9 +134,43 @@ public final class Lexicon {
         return out;
     }
 
+    /**
+     * 简拼查询：命中简拼（如 "zg"）→ 收集对应的 key 组的 top 词。
+     * 词库为 QJL2 时可用；否则返回空。
+     */
+    public List<Word> lookupInitials(byte[] init, int perKey) {
+        List<Word> out = new ArrayList<>();
+        if (initials == null || init == null || init.length == 0) return out;
+        int idx = binarySearchInitials(init);
+        if (idx < 0) return out;
+        int[] ks = initialsKeys[idx];
+        for (int i = 0; i < ks.length; i++) {
+            if (ks[i] < 0 || ks[i] >= keys.length) continue;
+            collect(ks[i], out, perKey);
+            if (out.size() >= 200) break;
+        }
+        return out;
+    }
+
+    public boolean hasInitialsIndex() {
+        return initials != null;
+    }
+
     /** key 是否存在。 */
     public boolean hasKey(byte[] key) {
         return binarySearch(key) >= 0;
+    }
+
+    private int binarySearchInitials(byte[] target) {
+        int lo = 0, hi = initials.length - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            int cmp = compareBytes(initials[mid], target);
+            if (cmp < 0) lo = mid + 1;
+            else if (cmp > 0) hi = mid - 1;
+            else return mid;
+        }
+        return -1;
     }
 
     public int keyCount() {

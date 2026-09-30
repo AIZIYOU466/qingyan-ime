@@ -9,11 +9,13 @@ import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.yathoughts.ime.engine.UserDictHolder;
+import com.yathoughts.ime.ui.KeyboardView;
 
 /**
  * 设置页（纯框架 Activity，无 AndroidX）：
@@ -92,6 +94,26 @@ public final class SettingsActivity extends Activity {
 
         Switch sound = switchRow("按键音", "sound");
         root.addView(sound, matchWrap());
+
+        // 键盘调节（面板缩放 / 高度 / 按键大小，与键盘内 ⚙ 调节页共享同一组 prefs）
+        root.addView(space((int) (16 * dp)));
+        root.addView(title("键盘调节", 18, true), matchWrap());
+        final SeekBar sbScale = adjustBar(root, "面板缩放", KeyboardView.PREF_SCALE, 50, 150);
+        final SeekBar sbHeight = adjustBar(root, "面板高度", KeyboardView.PREF_HEIGHT, 60, 140);
+        final SeekBar sbKey = adjustBar(root, "按键大小", KeyboardView.PREF_KEY, 60, 150);
+        Button resetAdjust = new Button(this);
+        resetAdjust.setText("重置键盘尺寸");
+        resetAdjust.setOnClickListener(v -> {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putInt(KeyboardView.PREF_SCALE, 100)
+                    .putInt(KeyboardView.PREF_HEIGHT, 100)
+                    .putInt(KeyboardView.PREF_KEY, 100)
+                    .apply();
+            sbScale.setProgress(50);
+            sbHeight.setProgress(40);
+            sbKey.setProgress(40);
+        });
+        root.addView(resetAdjust, matchWrap());
 
         Button clearBtn = new Button(this);
         clearBtn.setText(R.string.pref_clear_user);
@@ -180,7 +202,7 @@ public final class SettingsActivity extends Activity {
         Switch sw = new Switch(this);
         sw.setText(label);
         sw.setTextSize(15);
-        boolean def = key.equals("vibrate") || key.equals("sound");
+        boolean def = key.equals("vibrate") || key.equals("sound") || key.equals("fuzzy");
         sw.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(key, def));
         sw.setOnCheckedChangeListener((btn, checked) ->
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(key, checked).apply());
@@ -193,6 +215,40 @@ public final class SettingsActivity extends Activity {
         View v = new View(this);
         v.setMinimumHeight(h);
         return v;
+    }
+
+    /** 键盘调节滑杆：写 kb_* prefs（与键盘内调节页互通），进度 = 值 - min */
+    private SeekBar adjustBar(LinearLayout root, String label, final String key, int min, int max) {
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextSize(15);
+        int pad = (int) (8 * getResources().getDisplayMetrics().density);
+        tv.setPadding(0, pad, 0, 0);
+        root.addView(tv, matchWrap());
+
+        SeekBar sb = new SeekBar(this);
+        sb.setMax(max - min);
+        int cur = getSharedPreferences(PREFS, MODE_PRIVATE).getInt(key, 100);
+        sb.setProgress(Math.max(0, Math.min(max - min, cur - min)));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    getSharedPreferences(PREFS, MODE_PRIVATE)
+                            .edit().putInt(key, min + progress).apply();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        root.addView(sb, matchWrap());
+        return sb;
     }
 
     private LinearLayout.LayoutParams matchWrap() {

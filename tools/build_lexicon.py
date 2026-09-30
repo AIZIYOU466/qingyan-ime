@@ -11,7 +11,7 @@
   lex.bin  单字 + 词组合一二进制库
 
 二进制布局:
-  int32 magic 'QJL1'
+  int32 magic 'QJL2'   (QJL1 为旧版无简拼索引)
   int32 keyCount                     -- 拼音 key 数（key = 无声调拼音小写连写, 如 "nihao"）
   keyCount 条 key 记录:
       int16 keyLen, keyLen 字节 ASCII key
@@ -20,6 +20,11 @@
   N 条词记录:
       int16 charLen, charLen*int16 UTF-16 码元
       int32 freq
+  [QJL2 附加] 简拼索引区（简拼 -> key 下标列表，用于首字母联想）:
+      int32 initialCount
+      initialCount 条记录:
+          int16 keyLen, keyLen 字节 ASCII 简拼（如 "zg"）
+          int32 keyCount, keyCount 个 int32 keys_sorted 下标
 
 运行时查找: keys 升序数组 -> 二分找 key / 前缀范围 -> 取组内 top 词。
 """
@@ -112,10 +117,11 @@ def main():
                 words[w] = fr
     print(f"[2/4] jieba 纯 CJK 词: {len(words)}", file=sys.stderr)
 
-    # 3) 组装 (word, key, freq)
+    # 3) 组装 (word, key, freq, initials)
     #    单字: 全部字（含 jieba 词频; 非单字词的字给默认小词频 2，保证可打）
     #    多字词: freq >= 2 全保留（jieba CJK 约 30 万，控制规模在 8 字以内）
-    entries = []  # (word, key, freq)
+    #    initials: 多字词的简拼（每字主读音首字母连写，如 中国->zg），单字为 None
+    entries = []  # (word, key, freq, initials)
 
     # 单字
     single_in_jieba = 0
@@ -123,13 +129,13 @@ def main():
         if len(w) == 1:
             ch = w
             for py in char_pinyins[ch][:1]:        # 单字词只用主读音（多读音靠 chars 自身多记录）
-                entries.append((w, py, fr))
+                entries.append((w, py, fr, None))
             single_in_jieba += 1
     for ch, pys in char_pinyins.items():
         if ch in words:
             continue
         for py in pys:                              # 非常用字所有读音都可打
-            entries.append((ch, py, 2))
+            entries.append((ch, py, 2, None))
     print(f"    单字(jieba 有频): {single_in_jieba}, 单字记录累计: {sum(1 for e in entries if len(e[0])==1)}", file=sys.stderr)
 
     # 多字词
@@ -140,7 +146,9 @@ def main():
         if fr < 2:
             continue
         # key: 每字取主读音连写；跳过轻声/儿化无法归一的
+        # initials: 简拼 = 每字主读音首字母连写
         keys = ['']
+        initials = ''
         ok = True
         for ch in w:
             py = char_pinyins[ch][0]
@@ -148,19 +156,35 @@ def main():
                 ok = False
                 break
             keys = [k + py for k in keys[:1]]
+            initials += py[0]
         if not ok:
             continue
-        entries.append((w, keys[0], fr))
+        entries.append((w, keys[0], fr, initials))
         multi += 1
     print(f"    多字词: {multi}", file=sys.stderr)
 
     # 4) 写二进制
     #    按 key 分组: key -> [(word, freq)]
     group = defaultdict(list)
-    for w, key, fr in entries:
+    initials_of_key = defaultdict(set)   # key -> 简拼集合（多字词）
+    for w, key, fr, ini in entries:
         group[key].append((w, fr))
+        if ini:
+            initials_of_key[key].add(ini)
 
     keys_sorted = sorted(group.keys())
+    key_idx = {k: i for i, k in enumerate(keys_sorted)}
+    # 每个 key 的最大词频：简拼 key 列表按词频降序排序，保证高频词（如"中国"）先被收集
+    key_maxfreq = {}
+    for k, lst in group.items():
+        key_maxfreq[k] = max(fr for _, fr in lst)
+    # 简拼 -> key 下标列表（升序去重，按组内最高词频降序）
+    initials_map = defaultdict(list)
+    for k, inis in initials_of_key.items():
+        for ini in inis:
+            initials_map[ini].append(key_idx[k])
+    for ini, klist in initials_map.items():
+        klist.sort(key=lambda ki: -key_maxfreq[keys_sorted[ki]])
     all_records = []   # (word, freq) 顺序与 key 区间对应
     key_metas = []     # (key, start, count)
     start = 0
@@ -172,7 +196,7 @@ def main():
         start += len(lst)
 
     buf = bytearray()
-    buf += struct.pack('<4s', b'QJL1')
+    buf += struct.pack('<4s', b'QJL2')
     buf += struct.pack('<i', len(key_metas))
     for k, s0, c in key_metas:
         kb = k.encode('ascii')
@@ -184,12 +208,22 @@ def main():
         buf += struct.pack('<h', len(u16)//2) + u16
         buf += struct.pack('<i', fr)
 
+    # 简拼索引区
+    buf += struct.pack('<i', len(initials_map))
+    for ini in sorted(initials_map):
+        klist = initials_map[ini]
+        kb = ini.encode('ascii')
+        buf += struct.pack('<h', len(kb)) + kb
+        buf += struct.pack('<i', len(klist))
+        for ki in klist:
+            buf += struct.pack('<i', ki)
+
     import os
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, 'wb') as f:
         f.write(buf)
     size_mb = len(buf) / 1024 / 1024
-    print(f"[3/4] 词记录: {len(all_records)}, key 数: {len(key_metas)}", file=sys.stderr)
+    print(f"[3/4] 词记录: {len(all_records)}, key 数: {len(key_metas)}, 简拼条数: {len(initials_map)}", file=sys.stderr)
     print(f"[4/4] 写出 {OUT_PATH}: {size_mb:.2f} MB", file=sys.stderr)
 
 if __name__ == '__main__':
