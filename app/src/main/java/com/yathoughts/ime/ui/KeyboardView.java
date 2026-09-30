@@ -8,6 +8,8 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.util.AttributeSet;
@@ -19,21 +21,24 @@ import com.yathoughts.ime.R;
 /**
  * 26 键 QWERTY 自绘键盘。
  *
- * 行布局:
- *   r1: q w e r t y u i o p
- *   r2:  a s d f g h j k l
- *   r3:  ⇧  z x c v b n m  ⌫
- *   r4:  中  ?123  ,  空格  。  ↵
+ * 面板:
+ *   PANEL_ALPHA  字母页（中文 26 键 / 英文 QWERTY，?123 切换符号页）
+ *   PANEL_SYMBOL 符号页（数字 + 常用标点，ABC 返回字母页）
+ *   PANEL_NUMBER 数字页（inputType 为数字/电话/日期时由 Service 强制）
  *
  * 交互: 点按、滑动换键、⌫ 长按连删、首行字母长按出数字。
+ * 触摸只跟踪第一根手指：多指按下时忽略后续手指，避免双手打字误触发。
  */
 public final class KeyboardView extends View {
 
     public interface Listener {
         void onKey(String text, int code);
 
-        /** 中/英切换键、符号面板键等模式键 */
-        void onModeKey(int mode);
+        /** 面板切换（进入/退出符号页、数字页） */
+        void onPanelChanged(int panel);
+
+        /** 中/英语言切换 */
+        void onLanguageSwitched(int mode);
     }
 
     // 键码（onKey 的 code 参数）
@@ -43,14 +48,20 @@ public final class KeyboardView extends View {
     public static final int CODE_SPACE = 3;
     public static final int CODE_ENTER = 4;
     public static final int CODE_MODE_CN = 5;      // 中/英切换
-    public static final int CODE_MODE_SYMBOL = 6;  // ?123 符号面板
+    public static final int CODE_MODE_SYMBOL = 6;  // ?123 符号面板 / ABC 返回字母页
 
+    // 语言模式（仅 PANEL_ALPHA 有效）
     public static final int MODE_CN = 0;
     public static final int MODE_EN = 1;
 
+    // 面板
+    public static final int PANEL_ALPHA = 0;
+    public static final int PANEL_SYMBOL = 1;
+    public static final int PANEL_NUMBER = 2;
+
     private static final class Key {
         String label;        // 主显示
-        String altLabel;     // 长按显示（右上角小字），null 无
+        String altLabel;     // 英文模式显示（逗号/句号），null 无
         int code;
         float weight;        // 行内宽度权重
         boolean special;     // 功能键配色
@@ -73,9 +84,10 @@ public final class KeyboardView extends View {
 
     private Listener listener;
     private int mode = MODE_CN;
+    private int panel = PANEL_ALPHA;
     private int shiftState = 0;   // 0=off 1=once 2=lock
 
-    // 触摸状态
+    // 触摸状态：只跟踪第一根手指
     private int activePointer = -1;
     private Key pressedKey;
     private boolean longPressFired;
@@ -92,6 +104,9 @@ public final class KeyboardView extends View {
 
     private Vibrator vibrator;
     private boolean hapticEnabled = true;
+
+    private ToneGenerator toneGen;
+    private boolean soundEnabled = true;
 
     private static final long LONG_PRESS_MS = 350;
 
@@ -120,7 +135,7 @@ public final class KeyboardView extends View {
 
         setLayerType(LAYER_TYPE_SOFTWARE, null);   // 阴影需要软件层
         refreshColors();
-        buildKeys();
+        buildPanel(PANEL_ALPHA);
 
         vibrator = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
     }
@@ -131,6 +146,10 @@ public final class KeyboardView extends View {
 
     public void setHapticEnabled(boolean enabled) {
         hapticEnabled = enabled;
+    }
+
+    public void setSoundEnabled(boolean enabled) {
+        soundEnabled = enabled;
     }
 
     /** 暗色模式变化后由 Service 调用刷新颜色 */
@@ -148,12 +167,24 @@ public final class KeyboardView extends View {
 
     public void setMode(int m) {
         mode = m;
-        updateCaseLabels();
+        if (panel == PANEL_ALPHA) buildPanel(PANEL_ALPHA);
         invalidate();
     }
 
     public int getMode() {
         return mode;
+    }
+
+    public int getPanel() {
+        return panel;
+    }
+
+    public void setPanel(int p) {
+        if (p != PANEL_ALPHA && p != PANEL_SYMBOL && p != PANEL_NUMBER) return;
+        if (panel == p) return;
+        panel = p;
+        buildPanel(p);
+        invalidate();
     }
 
     public int getShiftState() {
@@ -166,51 +197,71 @@ public final class KeyboardView extends View {
         invalidate();
     }
 
-    private void buildKeys() {
+    // ---------- 面板构建 ----------
+
+    private void buildPanel(int p) {
         rows = new Key[4][];
-        rows[0] = row("qwertyuiop", null, 1f);
-        rows[1] = row("asdfghjkl", null, 1.11f);
-        // r3: shift + 7 键 + backspace
+        if (p == PANEL_SYMBOL) {
+            buildSymbolPanel();
+        } else if (p == PANEL_NUMBER) {
+            buildNumberPanel();
+        } else {
+            buildAlphaPanel();
+        }
+    }
+
+    private void buildAlphaPanel() {
+        rows[0] = row("qwertyuiop", 1f);
+        rows[1] = row("asdfghjkl", 1.11f);
         Key shift = special("⇧", CODE_SHIFT, 1.5f);
         Key back = special("⌫", CODE_BACKSPACE, 1.5f);
-        Key[] mid = row("zxcvbnm", null, 1f);
+        Key[] mid = row("zxcvbnm", 1f);
         rows[2] = new Key[9];
         rows[2][0] = shift;
         System.arraycopy(mid, 0, rows[2], 1, mid.length);
         rows[2][8] = back;
-        // r4
+        // r4: 中/英 ?123 ， 空格 。 ↵
         Key cn = special(mode == MODE_CN ? "中" : "英", CODE_MODE_CN, 1.2f);
         Key sym = special("?123", CODE_MODE_SYMBOL, 1.2f);
-        Key comma = char1("，", ",", 1f);          // 中文逗号; 英文模式显示 ","
+        Key comma = char1("，", ",", 1f);
         Key period = char1("。", ".", 1f);
-        Key space = new Key();
-        space.label = "空格";
-        space.code = CODE_SPACE;
-        space.weight = 4.2f;
-        Key enter = new Key();
-        enter.label = "↵";
-        enter.code = CODE_ENTER;
-        enter.weight = 1.6f;
-        enter.special = true;
-        enter.accent = true;
+        Key space = spaceKey(4.2f);
+        Key enter = enterKey(1.6f);
         rows[3] = new Key[]{cn, sym, comma, space, period, enter};
     }
 
-    private Key[] row(String letters, String[] alts, float weight) {
+    private void buildSymbolPanel() {
+        rows[0] = row("1234567890", 1f);
+        rows[1] = row("！？，。；：“”（）", 1f);
+        rows[2] = row("~@#%&-+*/=", 1f);
+        Key abc = special("ABC", CODE_MODE_SYMBOL, 1.5f);
+        Key space = spaceKey(3.2f);
+        Key back = special("⌫", CODE_BACKSPACE, 1.5f);
+        Key enter = enterKey(1.6f);
+        rows[3] = new Key[]{abc, space, back, enter};
+    }
+
+    private void buildNumberPanel() {
+        rows[0] = row("1234567890", 1f);
+        rows[1] = row("!?,.;:()@#", 1f);
+        rows[2] = row("~%&-+*/=<>", 1f);
+        Key dot = char1(".", ".", 1f);
+        Key space = spaceKey(3.2f);
+        Key back = special("⌫", CODE_BACKSPACE, 1.5f);
+        Key enter = enterKey(1.6f);
+        rows[3] = new Key[]{dot, space, back, enter};
+    }
+
+    private Key[] row(String letters, float weight) {
         Key[] ks = new Key[letters.length()];
         for (int i = 0; i < letters.length(); i++) {
             Key k = new Key();
             k.label = String.valueOf(letters.charAt(i));
-            k.altLabel = alts == null ? null : alts[i];
             k.code = CODE_CHAR;
             k.weight = weight;
             ks[i] = k;
         }
         return ks;
-    }
-
-    private Key[] row(String letters, float weight) {
-        return row(letters, null, weight);
     }
 
     private Key special(String label, int code, float weight) {
@@ -231,6 +282,24 @@ public final class KeyboardView extends View {
         return k;
     }
 
+    private Key spaceKey(float weight) {
+        Key k = new Key();
+        k.label = "空格";
+        k.code = CODE_SPACE;
+        k.weight = weight;
+        return k;
+    }
+
+    private Key enterKey(float weight) {
+        Key k = new Key();
+        k.label = "↵";
+        k.code = CODE_ENTER;
+        k.weight = weight;
+        k.special = true;
+        k.accent = true;
+        return k;
+    }
+
     private void updateCaseLabels() {
         boolean upper = (mode == MODE_EN && shiftState > 0);
         for (Key[] row : rows) {
@@ -243,15 +312,38 @@ public final class KeyboardView extends View {
         }
     }
 
+    // ---------- 尺寸 ----------
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int width = MeasureSpec.getSize(widthMeasureSpec);
-        float dp = getResources().getDisplayMetrics().density;
-        int keyH = (int) (46 * dp);
-        int rowsN = 4;
-        int height = rowsN * keyH + (int) (8 * dp);
+        int height = computeKeyboardHeight();
         setMeasuredDimension(width, height);
         layoutKeys(width, height);
+    }
+
+    /** 键盘高度随屏幕自适应：竖屏约为屏高 42%（168~224dp），横屏紧凑（92~128dp） */
+    private int computeKeyboardHeight() {
+        float dp = getResources().getDisplayMetrics().density;
+        float wDp = getResources().getDisplayMetrics().widthPixels / dp;
+        float hDp = getResources().getDisplayMetrics().heightPixels / dp;
+        boolean landscape = hDp < wDp;
+        float ratio;
+        int dpMin, dpMax;
+        if (landscape) {
+            ratio = 0.52f;
+            dpMin = 92;
+            dpMax = 128;
+        } else {
+            ratio = 0.42f;
+            dpMin = 168;
+            dpMax = 224;
+        }
+        int target = (int) (hDp * ratio);
+        target = Math.max(dpMin, Math.min(dpMax, target));
+        // 极端小屏兜底：不超过屏高一半
+        target = Math.min(target, Math.max(dpMin, (int) (hDp / 2)));
+        return (int) (target * dp);
     }
 
     private void layoutKeys(int width, int height) {
@@ -259,7 +351,7 @@ public final class KeyboardView extends View {
         float gap = 4 * dp;
         float padX = 3 * dp;
         float padTop = 4 * dp;
-        float keyH = (height - padTop - 4 * dp) / 4f;
+        float keyH = (height - padTop - 4 * dp) / rows.length;
 
         for (int r = 0; r < rows.length; r++) {
             Key[] row = rows[r];
@@ -277,6 +369,8 @@ public final class KeyboardView extends View {
             }
         }
     }
+
+    // ---------- 绘制 ----------
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -313,12 +407,18 @@ public final class KeyboardView extends View {
                 float cy = k.y + k.h / 2;
                 textPaint.setColor(textColor);
                 String label = k.label;
-                if (k.code == CODE_CHAR && k.label.length() == 1 && Character.isLetter(k.label.charAt(0))) {
+                if (k.code == CODE_CHAR && mode == MODE_EN && k.altLabel != null) {
+                    // 英文模式显示半角标点
+                    label = k.altLabel;
+                }
+                if (k.code == CODE_CHAR && label.length() == 1 && Character.isLetter(label.charAt(0))) {
                     // 英文模式 shift 大写显示
-                    label = (mode == MODE_EN && shiftState > 0) ? k.label.toUpperCase() : k.label;
+                    label = (mode == MODE_EN && shiftState > 0) ? label.toUpperCase() : label;
                     textPaint.setTextSize(22 * dp);
                 } else if (k.code == CODE_SPACE) {
                     textPaint.setTextSize(14 * dp);
+                } else if (panel == PANEL_ALPHA && k.code == CODE_CHAR) {
+                    textPaint.setTextSize(16 * dp);
                 } else {
                     textPaint.setTextSize(16 * dp);
                 }
@@ -326,7 +426,8 @@ public final class KeyboardView extends View {
                 canvas.drawText(label, cx, textY, textPaint);
 
                 // 首行字母右上角数字提示
-                if (k.code == CODE_CHAR && "qwertyuiop".contains(k.label) && mode == MODE_CN) {
+                if (k.code == CODE_CHAR && panel == PANEL_ALPHA
+                        && "qwertyuiop".contains(k.label) && mode == MODE_CN) {
                     int idx = "qwertyuiop".indexOf(k.label);
                     String digit = idx == 9 ? "0" : String.valueOf(idx + 1);
                     altTextPaint.setColor(0x886B7280);
@@ -336,8 +437,8 @@ public final class KeyboardView extends View {
             }
         }
 
-        // 按键气泡
-        if (pressedKey != null && pressedKey.code == CODE_CHAR && !longPressFired) {
+        // 按键气泡（仅字母页的字母键）
+        if (pressedKey != null && pressedKey.code == CODE_CHAR && panel == PANEL_ALPHA && !longPressFired) {
             float dp2 = getResources().getDisplayMetrics().density;
             float bw = Math.max(pressedKey.w, 44 * dp2);
             float bh = pressedKey.h * 1.35f;
@@ -355,10 +456,13 @@ public final class KeyboardView extends View {
         }
     }
 
+    // ---------- 触摸 ----------
+
     @Override
     public boolean onTouchEvent(MotionEvent ev) {
         switch (ev.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
+                if (activePointer != -1) return true;   // 异常状态防御
                 int idx = ev.getActionIndex();
                 activePointer = ev.getPointerId(idx);
                 pressedKey = keyAt(ev.getX(idx), ev.getY(idx));
@@ -371,18 +475,7 @@ public final class KeyboardView extends View {
                 return true;
             }
             case MotionEvent.ACTION_POINTER_DOWN: {
-                // 换指：重置为新的活动指
-                int idx = ev.getActionIndex();
-                activePointer = ev.getPointerId(idx);
-                pressedKey = keyAt(ev.getX(idx), ev.getY(idx));
-                longPressFired = false;
-                removeCallbacks(longPressRunnable);
-                removeCallbacks(repeatRunnable);
-                if (pressedKey != null) {
-                    haptic();
-                    postDelayed(longPressRunnable, LONG_PRESS_MS);
-                }
-                invalidate();
+                // 第二根及后续手指：忽略，保持第一个活动指，避免双手打字误触发
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
@@ -398,6 +491,21 @@ public final class KeyboardView extends View {
                         if (pressedKey != null) postDelayed(longPressRunnable, LONG_PRESS_MS);
                         invalidate();
                     }
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_POINTER_UP: {
+                // 只有活动指抬起才算一次点击；其余手指抬起忽略
+                int idx = ev.getActionIndex();
+                if (ev.getPointerId(idx) == activePointer) {
+                    removeCallbacks(longPressRunnable);
+                    removeCallbacks(repeatRunnable);
+                    if (pressedKey != null && !longPressFired) {
+                        emitKey(pressedKey);
+                    }
+                    pressedKey = null;
+                    activePointer = -1;
+                    invalidate();
                 }
                 return true;
             }
@@ -417,13 +525,20 @@ public final class KeyboardView extends View {
         return super.onTouchEvent(ev);
     }
 
+    @Override
+    public boolean performClick() {
+        super.performClick();
+        return true;
+    }
+
     private void fireLongPress() {
         if (pressedKey == null) return;
         if (pressedKey.code == CODE_BACKSPACE) {
             longPressFired = true;
             emitKey(pressedKey);
             postDelayed(repeatRunnable, 50);
-        } else if (pressedKey.code == CODE_CHAR && "qwertyuiop".contains(pressedKey.label) && mode == MODE_CN) {
+        } else if (pressedKey.code == CODE_CHAR && panel == PANEL_ALPHA
+                && "qwertyuiop".contains(pressedKey.label) && mode == MODE_CN) {
             // 长按首行 → 上屏数字
             int idx = "qwertyuiop".indexOf(pressedKey.label);
             String digit = idx == 9 ? "0" : String.valueOf(idx + 1);
@@ -442,6 +557,7 @@ public final class KeyboardView extends View {
 
     private void emitKey(Key k) {
         haptic();
+        playKeySound();
         if (listener == null) return;
         switch (k.code) {
             case CODE_SHIFT:
@@ -450,22 +566,58 @@ public final class KeyboardView extends View {
                 break;
             case CODE_MODE_CN:
                 mode = mode == MODE_CN ? MODE_EN : MODE_CN;
-                // 更新键标签
-                k.label = mode == MODE_CN ? "中" : "英";
+                buildPanel(PANEL_ALPHA);
                 invalidate();
-                listener.onModeKey(mode);
+                listener.onLanguageSwitched(mode);
+                break;
+            case CODE_MODE_SYMBOL:
+                panel = panel == PANEL_ALPHA ? PANEL_SYMBOL : PANEL_ALPHA;
+                buildPanel(panel);
+                invalidate();
+                listener.onPanelChanged(panel);
                 break;
             default:
-                listener.onKey(k.label, k.code);
+                String out = k.label;
+                // 英文模式：逗号/句号等输出半角
+                if (mode == MODE_EN && k.altLabel != null) out = k.altLabel;
+                listener.onKey(out, k.code);
         }
     }
 
     private void haptic() {
         if (!hapticEnabled || vibrator == null) return;
-        if (android.os.Build.VERSION.SDK_INT >= 26) {
-            vibrator.vibrate(VibrationEffect.createOneShot(12, VibrationEffect.DEFAULT_AMPLITUDE));
-        } else {
-            vibrator.vibrate(12);
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createOneShot(12, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(12);
+            }
+        } catch (Throwable ignored) {
+            // 部分机型/ROM 无振动器或权限被禁，震动失败不应影响输入
+        }
+    }
+
+    private void playKeySound() {
+        if (!soundEnabled) return;
+        try {
+            if (toneGen == null) {
+                toneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 60);
+            }
+            toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 30);
+        } catch (Throwable ignored) {
+            // 无音频设备/资源受限时静音，不影响输入
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        if (toneGen != null) {
+            try {
+                toneGen.release();
+            } catch (Throwable ignored) {
+            }
+            toneGen = null;
         }
     }
 

@@ -180,7 +180,8 @@ public final class SettingsActivity extends Activity {
         Switch sw = new Switch(this);
         sw.setText(label);
         sw.setTextSize(15);
-        sw.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(key, key.equals("vibrate")));
+        boolean def = key.equals("vibrate") || key.equals("sound");
+        sw.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(key, def));
         sw.setOnCheckedChangeListener((btn, checked) ->
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(key, checked).apply());
         int pad = (int) (8 * getResources().getDisplayMetrics().density);

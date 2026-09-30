@@ -21,11 +21,16 @@ import java.util.List;
  *
  * 组合逻辑：
  *  - 字母键: 累积 pendingPinyin，实时刷新候选；编辑框内组合文本 = 原始拼音字母
- *  - 候选选择: 上屏候选词（commitText），剩余拼音续打
+ *  - 候选选择: 上屏候选词（commitText），剩余拼音续打（级联）
  *  - 空格: 上屏首选
- *  - 回车: 组合中 = 上屏原始拼音字母；非组合 = 换行/动作
+ *  - 回车: 组合中 = 上屏原始拼音字母；非组合 = 换行/输入法动作（搜索/发送/前往）
  *  - ⌫: 组合中删一个拼音字母；否则删除光标前字符
- *  - 中/英: 英文模式字母直通
+ *  - 中/英: 英文模式字母直通，组合拼音上屏为文本；?123 进符号页
+ *
+ * 按输入框类型（inputType）自适应：
+ *  - 数字/电话/日期 → 数字键盘页
+ *  - 密码/邮箱/URL  → 英文键盘（密码禁候选，避免泄露）
+ *  - 普通文本       → 中文键盘 + 候选
  */
 public final class ImeService extends InputMethodService implements KeyboardView.Listener, CandidateView.Listener {
 
@@ -36,19 +41,19 @@ public final class ImeService extends InputMethodService implements KeyboardView
 
     private String pendingPinyin = "";      // 组合中的拼音字母串
     private List<PinyinEngine.Candidate> candidates = new ArrayList<>();
-    private boolean engineReadyNotified;
+    private boolean candidatesAllowed = true;   // 由当前 inputType 决定
 
     // ---------- 生命周期 ----------
 
     @Override
     public void onCreate() {
         super.onCreate();
+        CrashHandler.install(this);
         engine = UserDictHolder.get();
         engine.initAsync(getApplicationContext(), this::onEngineReady);
     }
 
     private void onEngineReady() {
-        engineReadyNotified = true;
         applyPrefs();
         if (pendingPinyin.length() > 0) refreshCandidates();
     }
@@ -58,6 +63,8 @@ public final class ImeService extends InputMethodService implements KeyboardView
         engine.setFuzzyEnabled(sp.getBoolean("fuzzy", false));
         boolean haptic = sp.getBoolean("vibrate", true);
         if (keyboardView != null) keyboardView.setHapticEnabled(haptic);
+        boolean sound = sp.getBoolean("sound", true);
+        if (keyboardView != null) keyboardView.setSoundEnabled(sound);
     }
 
     @Override
@@ -71,10 +78,15 @@ public final class ImeService extends InputMethodService implements KeyboardView
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
 
+        // 候选栏高度随屏幕自适应（约占屏高 7%，clamp 到舒适区间）
+        float hDp = getResources().getDisplayMetrics().heightPixels / dp;
+        float candRatio = 0.07f;
+        int candH = (int) (Math.max(32f, Math.min(46f, candRatio * hDp)) * dp);
+
         candidateView = new CandidateView(this);
         candidateView.setListener(this);
         root.addView(candidateView, new android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, (int) (42 * dp)));
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT, candH));
 
         keyboardView = new KeyboardView(this);
         keyboardView.setListener(this);
@@ -90,8 +102,29 @@ public final class ImeService extends InputMethodService implements KeyboardView
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         applyPrefs();
-        resetComposition();
-        if (candidateView != null) candidateView.setCandidates("", null);
+        // inputType → 面板 / 候选可见性
+        int inputType = info == null ? EditorInfo.TYPE_CLASS_TEXT : info.inputType;
+        int panel = panelFor(inputType);
+        boolean forceEn = forceEnglish(inputType);
+        candidatesAllowed = candidatesAllowedFor(inputType);
+        if (keyboardView != null) {
+            keyboardView.setPanel(panel);
+            if (forceEn && keyboardView.getMode() == KeyboardView.MODE_CN) {
+                keyboardView.setMode(KeyboardView.MODE_EN);
+            }
+        }
+        // restarting（光标移动/切换字段）时保留组合，避免丢拼音
+        if (!restarting) {
+            resetComposition();
+            if (candidateView != null) candidateView.setCandidates("", null);
+        }
+        applyCandidateVisibility();
+    }
+
+    /** 横屏也保持底部紧凑键盘（百度习惯），不进入全屏提取模式 */
+    @Override
+    public boolean isFullscreenMode() {
+        return false;
     }
 
     @Override
@@ -126,10 +159,24 @@ public final class ImeService extends InputMethodService implements KeyboardView
     }
 
     @Override
-    public void onModeKey(int mode) {
-        if (mode == KeyboardView.MODE_EN) {
-            resetComposition();
+    public void onPanelChanged(int panel) {
+        if (panel != KeyboardView.PANEL_ALPHA) {
+            // 进入符号/数字页：组合中的首选先上屏，避免拼音残留
+            flushTopCandidate();
         }
+        applyCandidateVisibility();
+    }
+
+    @Override
+    public void onLanguageSwitched(int mode) {
+        if (mode == KeyboardView.MODE_EN && pendingPinyin.length() > 0) {
+            // 切英文：组合拼音上屏为普通文本（百度习惯），并清掉编辑框组合区
+            String raw = pendingPinyin;
+            resetComposition();
+            InputConnection conn = ic();
+            if (conn != null) conn.commitText(raw, 1);
+        }
+        applyCandidateVisibility();
     }
 
     // ---------- CandidateView.Listener ----------
@@ -150,11 +197,13 @@ public final class ImeService extends InputMethodService implements KeyboardView
                 out = letter.toUpperCase();
                 if (keyboardView.getShiftState() == 1) keyboardView.setShiftState(0);
             }
-            ic().commitText(out, 1);
+            InputConnection conn = ic();
+            if (conn != null) conn.commitText(out, 1);
             return;
         }
-        // 中文模式：累积拼音
-        if (letter.length() == 1 && letter.charAt(0) >= 'a' && letter.charAt(0) <= 'z') {
+        // 中文模式：累积拼音（仅当键盘仍在字母页；数字/符号页的字符直通）
+        boolean alphaChar = letter.length() == 1 && letter.charAt(0) >= 'a' && letter.charAt(0) <= 'z';
+        if (keyboardView != null && keyboardView.getPanel() == KeyboardView.PANEL_ALPHA && alphaChar) {
             InputConnection conn = ic();
             if (conn == null) return;
             if (pendingPinyin.length() >= 30) return;   // 防御上限
@@ -162,7 +211,7 @@ public final class ImeService extends InputMethodService implements KeyboardView
             conn.setComposingText(pendingPinyin, 1);
             refreshCandidates();
         } else {
-            // 数字等直通（长按首行时也会走这里）
+            // 数字/符号等直通
             commitPendingOrSend(letter);
         }
     }
@@ -187,7 +236,7 @@ public final class ImeService extends InputMethodService implements KeyboardView
         if (pendingPinyin.length() > 0) {
             pendingPinyin = pendingPinyin.substring(0, pendingPinyin.length() - 1);
             if (pendingPinyin.isEmpty()) {
-                conn.commitText("", 1);   // 清掉组合区
+                conn.setComposingText("", 1);   // 清掉组合区
                 resetComposition();
             } else {
                 conn.setComposingText(pendingPinyin, 1);
@@ -225,6 +274,7 @@ public final class ImeService extends InputMethodService implements KeyboardView
                 conn.performEditorAction(action);
             } else {
                 conn.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+                conn.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
             }
         }
     }
@@ -252,8 +302,40 @@ public final class ImeService extends InputMethodService implements KeyboardView
         if (conn == null) return;
         String key = c.pinyinKey == null ? pendingPinyin : c.pinyinKey;
         engine.onCommit(c.word, key);
-        resetComposition();
-        conn.commitText(c.word, 1);
+        String rest = remainingPinyin(key);
+        if (rest != null && rest.length() > 0) {
+            // 级联续打：选中词后剩余拼音继续
+            pendingPinyin = rest;
+            conn.commitText(c.word, 1);
+            conn.setComposingText(rest, 1);
+            refreshCandidates();
+        } else {
+            resetComposition();
+            conn.commitText(c.word, 1);
+        }
+    }
+
+    /** 计算选中词消耗拼音后的剩余串；模糊音开启时直接放弃续打（key 变体前缀不可靠） */
+    private String remainingPinyin(String key) {
+        if (engine.isFuzzyEnabled()) return null;
+        String raw = pendingPinyin;
+        int i = 0;
+        int n = Math.min(raw.length(), key.length());
+        while (i < n && raw.charAt(i) == key.charAt(i)) i++;
+        return raw.substring(i);
+    }
+
+    private void flushTopCandidate() {
+        if (pendingPinyin.length() == 0) return;
+        InputConnection conn = ic();
+        if (!candidates.isEmpty()) {
+            PinyinEngine.Candidate first = candidates.get(0);
+            engine.onCommit(first.word, first.pinyinKey == null ? pendingPinyin : first.pinyinKey);
+            resetComposition();
+            if (conn != null) conn.commitText(first.word, 1);
+        } else {
+            resetComposition();
+        }
     }
 
     private void commitPendingOrSend(String s) {
@@ -266,6 +348,50 @@ public final class ImeService extends InputMethodService implements KeyboardView
         pendingPinyin = "";
         candidates = new ArrayList<>();
         if (candidateView != null) candidateView.setCandidates("", null);
+        InputConnection conn = ic();
+        if (conn != null) conn.setComposingText("", 1);
+    }
+
+    // ---------- inputType → 面板 / 候选可见性 ----------
+
+    private static int panelFor(int inputType) {
+        int cls = inputType & EditorInfo.TYPE_MASK_CLASS;
+        if (cls == EditorInfo.TYPE_CLASS_NUMBER
+                || cls == EditorInfo.TYPE_CLASS_PHONE
+                || cls == EditorInfo.TYPE_CLASS_DATETIME) {
+            return KeyboardView.PANEL_NUMBER;
+        }
+        return KeyboardView.PANEL_ALPHA;
+    }
+
+    private static boolean forceEnglish(int inputType) {
+        int cls = inputType & EditorInfo.TYPE_MASK_CLASS;
+        if (cls != EditorInfo.TYPE_CLASS_TEXT) return false;
+        int var = inputType & EditorInfo.TYPE_MASK_VARIATION;
+        return var == EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                || var == EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                || var == EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                || var == EditorInfo.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
+                || var == EditorInfo.TYPE_TEXT_VARIATION_URI;
+    }
+
+    private static boolean candidatesAllowedFor(int inputType) {
+        int cls = inputType & EditorInfo.TYPE_MASK_CLASS;
+        if (cls != EditorInfo.TYPE_CLASS_TEXT) return false;   // 数字等不联想
+        int var = inputType & EditorInfo.TYPE_MASK_VARIATION;
+        if (var == EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                || var == EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) return false;
+        if ((inputType & EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return false;
+        return true;
+    }
+
+    private void applyCandidateVisibility() {
+        if (candidateView == null) return;
+        boolean show = candidatesAllowed
+                && keyboardView != null
+                && keyboardView.getPanel() == KeyboardView.PANEL_ALPHA
+                && keyboardView.getMode() == KeyboardView.MODE_CN;
+        candidateView.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private InputConnection ic() {

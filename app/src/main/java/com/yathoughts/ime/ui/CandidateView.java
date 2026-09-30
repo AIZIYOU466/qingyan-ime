@@ -48,6 +48,7 @@ public final class CandidateView extends LinearLayout {
         pinyinView = new TextView(getContext());
         pinyinView.setTextSize(13);
         pinyinView.setSingleLine(true);
+        pinyinView.setTextColor(colorPinyin);
         LayoutParams plp = new LayoutParams(
                 LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT);
         plp.leftMargin = (int) (12 * dp);
