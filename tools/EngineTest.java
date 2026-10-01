@@ -161,7 +161,7 @@ public class EngineTest {
 
     static void loadInitials(int p){
         int n = readInt(p); p+=4;
-        if (n<=0||n>200000) return;
+        if (n<=0||n>(entryData.length-p)/6) return;
         initials = new byte[n][]; initialsKeys = new int[n][];
         for (int i=0;i<n;i++){
             int len=readShort(p); p+=2;

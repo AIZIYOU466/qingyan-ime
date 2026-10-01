@@ -53,6 +53,9 @@ public final class ImeService extends InputMethodService implements KeyboardView
     private List<PinyinEngine.Candidate> candidates = new ArrayList<>();
     private boolean candidatesAllowed = true;   // 由当前 inputType 决定
 
+    private static final int CANDIDATE_LIMIT = 40;   // 候选上限
+    private static final int MAX_PINYIN = 48;        // 组合拼音长度上限
+
     // ---------- 生命周期 ----------
 
     @Override
@@ -232,7 +235,7 @@ public final class ImeService extends InputMethodService implements KeyboardView
         if (keyboardView != null && keyboardView.getPanel() == KeyboardView.PANEL_ALPHA && alphaChar) {
             InputConnection conn = ic();
             if (conn == null) return;
-            if (pendingPinyin.length() >= 30) return;   // 防御上限
+            if (pendingPinyin.length() >= MAX_PINYIN) return;   // 防御上限
             pendingPinyin += letter;
             conn.setComposingText(pendingPinyin, 1);
             refreshCandidates();
@@ -317,7 +320,7 @@ public final class ImeService extends InputMethodService implements KeyboardView
             if (candidateView != null) candidateView.setCandidates("", null);
             return;
         }
-        candidates = engine.query(pendingPinyin, 20);
+        candidates = engine.query(pendingPinyin, CANDIDATE_LIMIT);
         List<String> words = new ArrayList<>();
         for (PinyinEngine.Candidate c : candidates) words.add(c.word);
         if (candidateView != null) candidateView.setCandidates(pendingPinyin, words);

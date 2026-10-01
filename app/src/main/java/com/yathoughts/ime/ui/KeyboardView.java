@@ -652,6 +652,14 @@ public final class KeyboardView extends View {
                 return true;
             }
             case MotionEvent.ACTION_POINTER_DOWN: {
+                // 非首指：立即上屏（并震动一次），保证双拇指快速交替输入不丢键
+                if (activePointer == -1) return true;
+                int idx = ev.getActionIndex();
+                Key k = keyAt(ev.getX(idx), ev.getY(idx));
+                if (k != null) {
+                    haptic();
+                    emitKey(k);
+                }
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
@@ -765,7 +773,6 @@ public final class KeyboardView extends View {
             String digit = idx == 9 ? "0" : String.valueOf(idx + 1);
             longPressFired = true;
             if (listener != null) listener.onKey(digit, CODE_CHAR);
-            haptic();
             pressedKey = null;
             invalidate();
         } else if (pressedKey.code == CODE_SHIFT) {
@@ -776,7 +783,6 @@ public final class KeyboardView extends View {
     }
 
     private void emitKey(Key k) {
-        haptic();
         playKeySound();
         if (listener == null) return;
         switch (k.code) {

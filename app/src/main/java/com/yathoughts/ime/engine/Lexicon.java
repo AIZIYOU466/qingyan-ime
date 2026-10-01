@@ -85,7 +85,8 @@ public final class Lexicon {
         if (p + 4 > entryData.length) return;
         int n = readInt(p);
         p += 4;
-        if (n <= 0 || n > 200000 || p >= entryData.length) return;
+        // 每条简拼记录最少 6 字节（len2+count4）；按剩余字节数做安全边界，不再按固定条数上限
+        if (n <= 0 || p >= entryData.length || n > (entryData.length - p) / 6) return;
         initials = new byte[n][];
         initialsKeys = new int[n][];
         for (int i = 0; i < n; i++) {
